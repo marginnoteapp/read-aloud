@@ -12,4 +12,4 @@
 
 ## License
 
-[MIT](https://github.com/marginnoteapp/readaloud/blob/main/LICENSE)
+[MIT](https://github.com/marginnoteapp/readaloud/blob/main/LICENSE) © [MarginNote](https://github.com/marginnoteapp)

@@ -1,4 +1,11 @@
-;(function () {
+/**
+ * MIT License
+ * Copyright (c) 2022 MarginNote
+ * Github: https://github.com/marginnoteapp/readaloud
+ * Welcom to contribute to this project!
+ */
+
+try {
   const Addon = {
     name: "Read Aloud",
     key: "readaloud"
@@ -12,11 +19,29 @@
   }
   const zh = {
     confirm: "确定",
-    cancel: "取消"
+    cancel: "取消",
+    no_text: "该 PDF 可能是扫描版本，无法获取到文字，无法朗读",
+    first_page: "已经是第一页了",
+    finished: "。本书朗读完毕",
+    insert_page: "此页为插入页，不支持朗读",
+    last_page: "已经是最后一页了",
+    auto_next_page_no_text:
+      "这是新的一页，但是该页没有文字或者无法获取到文字，继续翻页。",
+    new_page_no_text: "该页没有文字或者无法获取到文字，自动翻页。"
   }
   const en = {
     confirm: "OK",
-    cancel: "Cancel"
+    cancel: "Cancel",
+    finished: ". This book is finished",
+    insert_page: "This page is an inserted page and cannot be read aloud",
+    first_page: "It's already the first page.",
+    last_page: "It's already the last page",
+    no_text:
+      "This PDF may be a scanned version, and the text cannot be obtained, so it cannot be read aloud",
+    auto_next_page_no_text:
+      "This is new page. But there is no text or the text cannot be obtained on this page. Continue to next page.",
+    new_page_no_text:
+      "There is no text or the text cannot be obtained on this page. Go to next page."
   }
   const lang =
     NSLocale.preferredLanguages().length &&
@@ -24,8 +49,8 @@
       ? zh
       : en
   const console = {
-    log(obj) {
-      JSB.log(`${Addon.key} %@`, obj)
+    log(obj, suffix = "normal") {
+      JSB.log(`${Addon.key}-${suffix} %@`, obj)
     }
   }
   function NSValue2String(v) {
@@ -51,7 +76,9 @@
     const setTimer = async (sec, f, config) => {
       while (1) {
         if (config.stop) break
-        f()
+        if (f instanceof Promise) {
+          await f()
+        } else f()
         await delay(sec)
       }
     }
@@ -65,29 +92,28 @@
       }
     }
   }
+  function initButton(pos, text) {
+    const frame = { ...pos, width: 50, height: 50 }
+    const button = new UIButton(frame)
+    button.setTitleForState(text, 0)
+    button.addTargetActionForControlEvents(self, "clickButton:", 1 << 6)
+    return button
+  }
+
   const SpearkerViewController = JSB.defineClass(
     "SpearkerViewController : UIViewController",
     {
       viewDidLoad() {
-        function initButton(pos, text) {
-          const frame = { ...pos, width: 50, height: 50 }
-          const button = new UIButton(frame)
-          button.setTitleForState(text, 0)
-          button.addTargetActionForControlEvents(self, "clickButton:", 1 << 6)
-          return button
-        }
-
-        self.view.addSubview(initButton({ x: 0, y: 0 }, "⏹"))
-        self.view.addSubview(initButton({ x: 50, y: 0 }, "⏮"))
-        self.view.addSubview(initButton({ x: 100, y: 0 }, "⏸︎"))
-        self.view.addSubview(initButton({ x: 150, y: 0 }, "⏭"))
-
         self.view.layer.cornerRadius = 10
         self.view.layer.borderWidth = 2
         self.view.layer.borderColor = UIColor.colorWithHexString("#65819C")
         self.view.layer.cornerRadius = 10
+        self.view.addSubview(initButton({ x: 0, y: 0 }, "⏹"))
+        self.view.addSubview(initButton({ x: 100, y: 0 }, "⏮"))
+        self.view.addSubview(initButton({ x: 150, y: 0 }, "⏭"))
       },
       viewWillAppear() {
+        self.view.addSubview(initButton({ x: 50, y: 0 }, "⏯"))
         self.view.backgroundColor = UIColor.colorWithHexString(
           colors[Application.sharedInstance().currentTheme]
         )
@@ -104,8 +130,10 @@
           button.setTitleForState("⏸", 0)
         } else
           status = {
-            "⏭": "next",
-            "⏮": "previous",
+            "⏭": "nextPage",
+            "⏪": "prevLine",
+            "⏩": "nextLine",
+            "⏮": "prevPage",
             "⏹": "stop"
           }[text]
         NSNotificationCenter.defaultCenter().postNotificationNameObjectUserInfo(
@@ -121,9 +149,7 @@
   )
   JSB.newAddon = () => {
     function layoutViewController() {
-      const studyController = Application.sharedInstance().studyController(
-        self.window
-      )
+      const { studyController } = self
       const frame = studyController.view.bounds
       const width = 200
       function autoX() {
@@ -145,23 +171,6 @@
         width,
         height: 50
       }
-    }
-    function popup(title, message, buttons = [lang.confirm]) {
-      return new Promise(resolve =>
-        UIAlertView.showWithTitleMessageStyleCancelButtonTitleOtherButtonTitlesTapBlock(
-          title,
-          message,
-          2,
-          lang.cancel,
-          buttons,
-          (alert, buttonIndex) => {
-            resolve({
-              content: alert.textFieldAtIndex(0).text.trim(),
-              option: buttonIndex - 1
-            })
-          }
-        )
-      )
     }
     function showHUD(text, duration = 2) {
       Application.sharedInstance().showHUD(text, self.window, duration)
@@ -188,77 +197,115 @@
         .sort((a, b) => b.y - a.y)
         .map(k => k.line)
         .join(" ")
+        .trim()
     }
     class Speaker {
       constructor() {
         this.s = SpeechManager.sharedInstance()
+        this.speakerStatus = "stop"
       }
-      isSpeakOver() {
-        console.log(this.s.speaking)
-        return !this.s.speaking && this.status === "playing"
+      get status() {
+        if (Date.now() - this.lastPlay < 300) return "playing"
+        if (this.speakerStatus === "playing" && !this.s.sysSpeaking)
+          return "over"
+        return this.speakerStatus
       }
       play(content) {
         this.s.playText(content)
-        this.status = "playing"
+        this.lastPlay = Date.now()
+        this.speakerStatus = "playing"
       }
       pause() {
         this.s.pauseSpeech()
-        this.status = "pause"
+        this.speakerStatus = "pause"
       }
       continue() {
         this.s.continueSpeech()
+        this.lastPlay = Date.now()
+        this.speakerStatus = "playing"
       }
       close() {
         this.s.stopSpeech()
+        this.speakerStatus = "stop"
       }
     }
-    async function onToggle() {
-      try {
-        self.status = !self.status
+
+    function closeAll() {
+      if (self.status) {
+        self.status = false
         self.studyController.refreshAddonCommands()
-        if (self.status) {
-          layoutViewController()
-          self.studyController.view.addSubview(self.speakerViewController.view)
-          const { currPageNo } = self.documentController
-          let pageNo = currPageNo
-          self.speaker.play(
-            "测试翻页测试翻页测试翻页测试翻页测试翻页测试翻页测试翻页"
-          )
-          self.timer = await setTimeInterval(1, () => {
-            if (self.speaker.isSpeakOver()) {
-              console.log("执行了几次")
-              // self.speaker.play(getPageContent(pageNo + 1))
-            }
-          })
-        } else {
-          self.speakOver = undefined
-          self.speakerViewController.view.removeFromSuperview()
-          self.speaker.close()
+        self.speakerViewController.view.removeFromSuperview()
+        if (self.speaker.status !== "stop") {
           self.timer.invalidate()
+          self.speaker.close()
         }
-      } catch (e) {
-        console.log(String(e))
+      }
+    }
+    async function openAll() {
+      if (!self.status) {
+        if (
+          self.studyController.studyMode <= 1 ||
+          (self.studyController.studyMode === 2 &&
+            !self.studyController.readerController.view.hidden)
+        ) {
+          const { currPageNo } = self.documentController
+          if (isAdded(currPageNo)) {
+            showHUD(lang.insert_page, 2)
+            return
+          }
+          const content = getPageContent(currPageNo)
+          if (!content) {
+            showHUD(lang.no_text, 2)
+            return
+          }
+          self.status = true
+          self.studyController.refreshAddonCommands()
+          self.studyController.view.addSubview(self.speakerViewController.view)
+          layoutViewController()
+        }
       }
     }
     function jump(pageNo) {
-      const documentController =
-        self.studyController.readerController.currentDocumentController
-      documentController.setPageAtIndex(
-        documentController.indexFromPageNo(pageNo)
-      )
+      const index = self.documentController.indexFromPageNo(pageNo)
+      self.documentController.setPageAtIndex(index)
     }
-
+    function isDeleted(pageNo, index) {
+      index = index ?? self.documentController.indexFromPageNo(pageNo)
+      return index === 0 && pageNo !== 1
+    }
+    function isAdded(pageNo) {
+      return pageNo > 10000
+    }
+    function isLastPage(pageNo) {
+      return pageNo === self.documentController.document.pageCount
+    }
+    function isFirstPage(pageNo) {
+      return pageNo === 1
+    }
+    function nextPage(pageNo) {
+      do {
+        if (isLastPage(pageNo)) return false
+        pageNo++
+      } while (isDeleted(pageNo))
+      return pageNo
+    }
+    function prevPage(pageNo) {
+      do {
+        if (isFirstPage(pageNo)) return false
+        pageNo--
+      } while (isDeleted(pageNo))
+      return pageNo
+    }
     return JSB.defineClass(
       Addon.name + ": JSExtension",
       {
         sceneWillConnect() {
           self.status = false
+          self.pageNo = 0
           self.app = Application.sharedInstance()
           self.studyController = self.app.studyController(self.window)
           self.speaker = new Speaker()
           self.speakerViewController = SpearkerViewController.new()
-          self.documentController =
-            self.studyController.readerController.currentDocumentController
         },
         notebookWillOpen() {
           NSNotificationCenter.defaultCenter().addObserverSelectorName(
@@ -275,18 +322,23 @@
         },
         documentDidOpen(docmd5) {
           self.docmd5 = docmd5
+          self.documentController =
+            self.studyController.readerController.currentDocumentController
+        },
+        documentWillClose() {
+          closeAll()
         },
         queryAddonCommandStatus() {
           return self.studyController.studyMode !== 3
             ? {
-                image: "logo.png",
+                image: "logo_44x44.png",
                 object: self,
                 selector: "onToggle:",
                 checked: self.status
               }
             : null
         },
-        controllerWillLayoutSubviews: function (controller) {
+        controllerWillLayoutSubviews(controller) {
           if (
             controller ==
             Application.sharedInstance().studyController(self.window)
@@ -294,7 +346,7 @@
             layoutViewController()
           }
         },
-        onReadAloudStatusChange(sender) {
+        async onReadAloudStatusChange(sender) {
           if (
             !Application.sharedInstance().checkNotifySenderInWindow(
               sender,
@@ -304,40 +356,104 @@
             return
           const { status } = sender.userInfo
           switch (status) {
-            case "continue":
-              self.speaker.continue()
+            case "continue": {
+              if (self.speaker.status === "stop") {
+                const { currPageNo } = self.documentController
+                if (isAdded(currPageNo)) {
+                  showHUD(lang.insert_page, 2)
+                  closeAll()
+                  return
+                }
+                const content = getPageContent(currPageNo)
+                if (!content) {
+                  showHUD(lang.no_text, 2)
+                  closeAll()
+                  return
+                }
+                // self.speaker.play("测试翻页测试翻页测试翻页测试翻")
+                self.pageNo = currPageNo
+                self.speaker.play(content)
+                // sysSpeaking value delay 1s
+                self.timer = await setTimeInterval(0.5, () => {
+                  try {
+                    if (self.speaker.status === "over") {
+                      const pageNo = nextPage(self.pageNo)
+                      if (pageNo === false) {
+                        closeAll()
+                        return
+                      } else {
+                        self.pageNo = pageNo
+                        const content = getPageContent(self.pageNo)
+                        jump(self.pageNo)
+                        const overText =
+                          nextPage(self.pageNo) === false ? lang.finished : ""
+                        self.speaker.play(
+                          (content ? content : lang.auto_next_page_no_text) +
+                            overText
+                        )
+                      }
+                    }
+                    // else if (self.speaker.status === "pause") {
+                    //   console.log("暂停")
+                    // } else {
+                    //   console.log("正在播放")
+                    // }
+                  } catch (err) {
+                    console.log(String(err))
+                  }
+                })
+              } else self.speaker.continue()
               break
+            }
             case "pause":
               self.speaker.pause()
               break
-            case "next": {
-              const { currPageNo } = self.documentController
-              let pageNo = currPageNo + 1
-              const content = getPageContent(pageNo)
-              if (content) {
-                self.speaker.play(content)
-                jump(pageNo)
+            case "nextPage": {
+              if (self.speaker.status === "stop") return
+              const pageNo = nextPage(self.pageNo)
+              if (pageNo === false) {
+                showHUD(lang.last_page, 2)
+              } else {
+                self.pageNo = pageNo
+                jump(self.pageNo)
+                const content = getPageContent(self.pageNo)
+                self.speaker.play(content ? content : lang.new_page_no_text)
               }
               break
             }
-            case "previous": {
-              const { currPageNo } = self.documentController
-              let pageNo = currPageNo - 1
-              const content = getPageContent(pageNo)
-              if (content) {
-                self.speaker.play(content)
-                jump(pageNo)
+            case "prevPage": {
+              if (self.speaker.status === "stop") return
+              const pageNo = prevPage(self.pageNo)
+              if (pageNo === false) {
+                showHUD(lang.first_page, 2)
+              } else {
+                self.pageNo = pageNo
+                jump(self.pageNo)
+                const content = getPageContent(self.pageNo)
+                self.speaker.play(content ? content : lang.new_page_no_text)
               }
               break
             }
             case "stop":
-              onToggle()
+              closeAll()
               break
           }
         },
-        onToggle
+        async onToggle() {
+          try {
+            if (self.status) {
+              closeAll()
+            } else {
+              await openAll()
+            }
+          } catch (e) {
+            console.log(String(e))
+          }
+        }
       },
       {}
     )
   }
-})()
+} catch (err) {
+  JSB.log(`readaloud-error %@`, String(err))
+}
