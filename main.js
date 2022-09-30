@@ -131,8 +131,6 @@ try {
         } else
           status = {
             "⏭": "nextPage",
-            "⏪": "prevLine",
-            "⏩": "nextLine",
             "⏮": "prevPage",
             "⏹": "stop"
           }[text]

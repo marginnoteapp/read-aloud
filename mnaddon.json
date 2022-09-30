@@ -2,7 +2,7 @@
   "addonid": "marginnote.extension.readaloud",
   "author": "MN(ourongxing",
   "title": "Read Aloud",
-  "version": "0.9.0",
+  "version": "1.0.0",
   "marginnote_version_min": "3.7.19",
   "cert_key": ""
 }
